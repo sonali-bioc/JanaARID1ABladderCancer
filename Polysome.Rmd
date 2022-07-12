@@ -1,0 +1,53 @@
+---
+title: "Polysome Seq Analysis"
+author: "Sonali Arora"
+date: "July 12, 2022"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r}
+
+
+rm(list=ls())
+library(xtail)
+
+
+countData <- read.delim2(file.path(mainDir, "STAR/star_hts/mouse_star2_htseq_reverse_raw_reads.txt"), 
+                         header=T, row.names=1, 
+                         check.names = FALSE, stringsAsFactors = FALSE)
+coldata = read.delim("key.txt",header=T, 
+                     stringsAsFactors = FALSE)
+countData= countData[, c(match( coldata[,1], colnames(countData)))]
+colnames(countData) = coldata$proposed_newname
+
+# run xtail 
+rp.idx = grep("High polysome fractions", coldata[, "sampleGroup"])
+test.rp = countData[, rp.idx]
+
+rna.idx = grep("80S", coldata[, "sampleGroup"])
+test.rna = countData[, rna.idx]
+
+test.group = c(rep("A", 3),rep("B", 3) )
+
+colnames(test.rp) = c("control1", "treatment1" , 
+                      "control2", "treatment2" , 
+                      "control3", "treatment3" ) 
+colnames(test.rna) = colnames(test.rp)
+
+condition  <- rep(c("control", "treatment"),3)
+test.results <- xtail(test.rna,test.rp,condition,bins=1000)
+
+res = resultsTable(test.results)
+res = res[ ,grep("_v1|_v2", colnames(res))]
+res$FDR_v2 = p.adjust(res$pvalue_v2, method="BH")
+res = cbind(geneName =rownames(res),  res)
+rownames(res) = NULL
+head(res)
+
+res = as.data.frame(res)
+
+write_xlsx(res, "xtail_result_high_80s_1_7_20.xlsx")
+```
