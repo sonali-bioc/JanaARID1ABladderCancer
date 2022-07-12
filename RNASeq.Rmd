@@ -1,0 +1,165 @@
+---
+title: "RNASeq Analysis"
+author: "Sonali Arora"
+date: "July 12, 2022"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r}
+m(list=ls())
+
+countData <- read.delim2(file.path(mainDir, "STAR/star_hts/mouse_star2_htseq_reverse_raw_reads.txt"), 
+                         header=T, row.names=1, 
+                         check.names = FALSE, stringsAsFactors = FALSE)
+coldata = read.delim("key.txt",header=T, 
+                     stringsAsFactors = FALSE)
+countData= countData[, c(match( coldata[,1], colnames(countData)))]
+colnames(countData) = coldata$proposed_newname
+
+
+df <- read.delim( "ARID1A_cancer_KO_vs_WT_DE_analysis_3_26_2019.txt", 
+                  header=T, stringsAsFactors = FALSE, row.names = 1)
+df = df[, grep("raw_", colnames(df))]
+
+# keep only common genes. 
+common_genes = intersect( rownames(df) , rownames(countData))
+df = df[common_genes, ]
+countData = countData[common_genes, ]
+
+# combine the data & do batch correction.
+countData  = cbind( countData, df)
+library(sva)
+batch <- c(rep(1, 6), rep(2, 4))
+adjusted <- ComBat_seq(as.matrix(countData), batch=batch, group=NULL)
+
+
+saveRDS(adjusted, file = "adjusted.Rds" )
+
+# make new coldata 
+coldata = coldata[, c("sampleType", "proposed_newname")]
+coldata$dataset = "ARID1A Normal"
+colnames(coldata) = c("SampleType", "sampleName", "dataset")
+
+temp = data.frame( SampleType = c( rep("WT", 2), rep("KO", 2)), 
+                   sampleName = c("C2", "D1", "B10", "F12"), 
+                   dataset= rep("ARID1A Cancer", 4) )
+                   
+coldata = rbind(coldata, temp)
+coldata$SampleType = gsub("ARID1A", "", coldata$SampleType)
+
+
+colnames(adjusted) = gsub("raw_", "", colnames(adjusted))
+
+id = apply(coldata, 1 , function(x) {
+  paste0(c(trimws(x["dataset"]), x["SampleType"]), collapse = " ")
+})
+coldata = cbind(coldata, id)
+
+
+library(DESeq2)
+dds <- DESeqDataSetFromMatrix(countData = adjusted, 
+                              colData = coldata, design = ~ id )
+norm_data <- assay(rlog(dds))
+colnames(norm_data) = colnames(adjusted)
+
+
+sampleNames = colnames(adjusted)
+sampleDists <- dist( t( norm_data ) )
+sampleDistMatrix <- as.matrix( sampleDists )
+hc = hclust(sampleDists)
+
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+rownames(sampleDistMatrix) <- sampleNames
+colnames(sampleDistMatrix) <- sampleNames
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+mdsData <- data.frame(cmdscale(sampleDistMatrix))
+mds <- cbind(mdsData, as.data.frame(coldata))
+mds <- ggplot(mds, aes(X1,X2,color=id, shape = dataset)) +
+  geom_point(size=4)+ theme_bw() +
+  ggtitle(paste0("MDS plot : ")) +
+  theme(plot.title = element_text(lineheight=.8, face="bold")) +
+  geom_text(aes(label=sampleName),hjust="inward", vjust=2, size=4)
+
+pc= prcomp(t(norm_data))
+pc_data1 = data.frame(PC1=pc$x[,1], PC2=pc$x[,2],coldata )
+percentVar <- (pc$sdev^2 / sum( pc$sdev^2 ) )*100
+percentVar= round(percentVar[1:2], 2)
+
+p1 = ggplot(pc_data1, aes(PC1, PC2, color=id, shape = dataset)) +
+  geom_point(size=4) +theme_bw() +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance"))+
+  ggtitle(paste0("PCA plot : ")) +
+  geom_text(aes(label=sampleName),hjust="inward", vjust=2, size=4)+
+  theme(plot.title = element_text(lineheight=.8, face="bold"))
+
+pdf(file.path(resdir, paste0("exploratory_plots_all_samples.pdf")), width =10)
+plot(hc, main = paste0("Dendrogram"))
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+print(mds)
+print(p1)
+dev.off()
+
+```
+
+# edgeR analysis
+
+```{r}
+
+
+genotype = coldata$id
+genotype = gsub(" ", "_", genotype)
+
+y <- DGEList(counts = adjusted, group = genotype)
+
+# Filter out low read counts
+keep <- rowSums(y$counts) >= 3
+y <- y[keep, , keep.lib.sizes=FALSE]
+y <- calcNormFactors(y)
+
+
+# Make a design matrix
+design <- model.matrix(~0+genotype)
+rownames(design) <- colnames(y)
+colnames(design) <- levels(y$samples$group)
+
+# Estimate dispersion for the dataset
+y <- estimateDisp(y, design, robust=TRUE)
+y$common.dispersion
+
+# Visualize dispersion estimates in a BCV plot
+plotBCV(y)
+
+# ARID1A_Cancer : WTnormal versus WTcancer
+my.contrasts <- makeContrasts(KOvsWT =ARID1A_Cancer_WT-ARID1A_Normal__WT, levels = design)
+fit <- glmFit(y, design)
+lrt <- glmLRT(fit, contrast = my.contrasts)
+tt = topTags(lrt,n=nrow(y))
+tt_wt <- data.frame(rownames(tt$table), tt$table[, 1], tt$table[, 4:5])
+colnames(tt_wt) <- c("genes", "edgeR_logFC", "edgeR_PValue", "edgeR_FDR")
+
+write_xlsx(tt_wt, "Master_sheet_WTnormal_versus_WTcancer.xlsx")
+
+
+# ARID1A_Normal : Arid1anormal versus ARID1Acancer
+my.contrasts <- makeContrasts(KOvsWT = ARID1A_Cancer_KO-ARID1A_Normal__KO, levels = design)
+fit <- glmFit(y, design)
+lrt <- glmLRT(fit, contrast = my.contrasts)
+tt = topTags(lrt,n=nrow(y))
+tt_ko <- data.frame(rownames(tt$table), tt$table[, 1], tt$table[, 4:5])
+colnames(tt_ko ) <- c("genes", "edgeR_logFC", "edgeR_PValue", "edgeR_FDR")
+
+write_xlsx(tt_ko, "Master_sheet_Arid1anormal_versus_ARID1Acancer.xlsx")
+
+
+
+```
