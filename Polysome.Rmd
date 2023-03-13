@@ -24,10 +24,10 @@ countData= countData[, c(match( coldata[,1], colnames(countData)))]
 colnames(countData) = coldata$proposed_newname
 
 # run xtail 
-rp.idx = grep("High polysome fractions", coldata[, "sampleGroup"])
+rp.idx = grep("Polysome fraction", coldata[, "sampleGroup"])
 test.rp = countData[, rp.idx]
 
-rna.idx = grep("80S", coldata[, "sampleGroup"])
+rna.idx = grep("Subpolysome fraction", coldata[, "sampleGroup"])
 test.rna = countData[, rna.idx]
 
 test.group = c(rep("A", 3),rep("B", 3) )
